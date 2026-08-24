@@ -20,10 +20,8 @@ def main():
     mlflow.sklearn.autolog()
 
     # Load preprocessed dataset
-    data_dir = "namadataset_preprocessing"
-    if not os.path.exists(data_dir):
-        # Fallback to check relative paths
-        data_dir = "../Eksperimen_SML_Nafiul-Irsad/preprocessing/namadataset_preprocessing"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(script_dir, "namadataset_preprocessing")
 
     print(f"Loading preprocessed data from {data_dir}...")
     X_train = pd.read_csv(os.path.join(data_dir, "X_train_scaled.csv"))
