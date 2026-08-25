@@ -1,0 +1,11 @@
+mlruns/
+mlartifacts/
+run_id.txt
+metrics.json
+MLProject/artifacts/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store

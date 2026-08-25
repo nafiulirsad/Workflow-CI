@@ -4,60 +4,89 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.10"
+  IMAGE_NAME: bitcoin-predictor
 
 jobs:
   retrain-and-build:
+    name: Test, Retrain and Publish Model Image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: MLProject/requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mlflow scikit-learn pandas numpy
+          pip install -r MLProject/requirements.txt
 
-      - name: Execute MLProject Retraining
-        run: |
-          mlflow run MLProject --no-conda -P n_estimators=100 -P max_depth=10
+      - name: Run unit tests
+        working-directory: MLProject
+        run: pytest
 
-      - name: Find Latest MLflow Run ID
-        id: get-run-id
+      - name: Execute MLProject retraining
+        env:
+          MLFLOW_TRACKING_URI: file://${{ github.workspace }}/mlruns
         run: |
-          # Find the directory with the latest modification time in mlruns/
-          # MLflow creates directories named after experiment IDs, default is '0' or a long integer.
-          # We search for the run directory inside mlruns/0/ or mlruns/*
-          RUN_ID=$(ls -td mlruns/*/* 2>/dev/null | grep -v 'meta.yaml' | head -n 1 | xargs basename)
-          if [ -z "$RUN_ID" ]; then
-            # fallback search
-            RUN_ID=$(find mlruns -maxdepth 2 -type d -not -path 'mlruns' -not -path 'mlruns/models' | grep -v 'meta.yaml' | head -n 1 | xargs basename)
-          fi
-          echo "Found Run ID: $RUN_ID"
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          mlflow run MLProject --env-manager=local \
+            --experiment-name Bitcoin_Price_Prediction_CI \
+            -P n_estimators=100 \
+            -P max_depth=10
+
+      - name: Show training result
+        run: |
+          echo "Run ID: $(cat MLProject/run_id.txt)"
+          cat MLProject/metrics.json
+          echo "Exported model files:"
+          ls -R MLProject/artifacts/model
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-model
+          path: |
+            MLProject/artifacts/model
+            MLProject/metrics.json
+            MLProject/run_id.txt
+          retention-days: 30
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker Image using MLflow
-        run: |
-          # Search for where the model artifact is saved
-          MODEL_PATH=$(find mlruns -name "model" -type d | head -n 1)
-          echo "Model Path found: $MODEL_PATH"
-          mlflow models build-docker -m "$MODEL_PATH" -n ghcr.io/${{ github.repository }}/bitcoin-predictor:latest
+      - name: Build and push Docker image to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: MLProject
+          file: MLProject/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-      - name: Push Docker Image to GHCR
+      - name: Print published image reference
+        if: github.event_name != 'pull_request'
         run: |
-          docker push ghcr.io/${{ github.repository }}/bitcoin-predictor:latest
+          echo "Image pushed: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest"
